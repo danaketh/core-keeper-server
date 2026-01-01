@@ -1,0 +1,54 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+LICENSE
+*.md
+!.env.example
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Data directories
+data/
+worlds/
+backups/
+server-files/
+server-data/
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.tar.gz
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# Docker files
+docker-compose.override.yml
+docker-compose-example/
+.dockerignore
+
+# Development tools
+Makefile
+manage.bat
+MIGRATION.md
