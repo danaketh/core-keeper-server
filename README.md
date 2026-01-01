@@ -39,6 +39,36 @@ docker pull ghcr.io/danaketh/core-keeper-server:latest
 docker pull ghcr.io/danaketh/core-keeper-server:21036907
 ```
 
+### Using Specific Versions
+
+By default, `docker-compose.yml` uses the `latest` tag. To pin to a specific Core Keeper build:
+
+**Option 1: Edit docker-compose.yml**
+```yaml
+services:
+  core-keeper:
+    image: ghcr.io/danaketh/core-keeper-server:21036907  # Pin to specific build
+```
+
+**Option 2: Use environment variable override**
+```bash
+# In your shell or .env file
+export CORE_KEEPER_VERSION=21036907
+docker compose up -d
+```
+
+Then modify `docker-compose.yml`:
+```yaml
+services:
+  core-keeper:
+    image: ghcr.io/danaketh/core-keeper-server:${CORE_KEEPER_VERSION:-latest}
+```
+
+**Finding available versions:**
+- Check [GitHub Container Registry packages](https://github.com/danaketh/core-keeper-server/pkgs/container/core-keeper-server)
+- Check [SteamDB patch notes](https://steamdb.info/app/1963720/patchnotes/) for build numbers
+- List git tags: `git tag -l "build-*"`
+
 ## Quick Start
 
 ### Prerequisites
@@ -148,27 +178,71 @@ The server uses one volume for data persistence:
 
 ## Building from Source
 
-### Local Build
+By default, `docker-compose.yml` uses pre-built images from GitHub Container Registry. If you want to build locally instead:
+
+### Option 1: Override with docker-compose.override.yml (Recommended)
+
+Create a `docker-compose.override.yml` file:
+
+```yaml
+services:
+  core-keeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: core-keeper-server:local
+```
+
+This preserves the original `docker-compose.yml` and allows you to build locally:
 
 ```bash
 docker compose build
+docker compose up -d
 ```
 
-### Manual Build
+### Option 2: Modify docker-compose.yml directly
+
+Edit `docker-compose.yml`:
+
+```yaml
+services:
+  core-keeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: core-keeper-server:latest
+    # Comment out or remove the registry image line
+```
+
+### Manual Docker Build
+
+Build without Docker Compose:
 
 ```bash
+# Basic build
 docker build -t core-keeper-server:latest .
-```
 
-### Build with Specific Version
-
-```bash
+# Build with specific version metadata
 docker build \
   --build-arg CORE_KEEPER_VERSION=21036907 \
   --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
   --build-arg VCS_REF=$(git rev-parse --short HEAD) \
   -t core-keeper-server:21036907 .
 ```
+
+### When to Build Locally
+
+**Use pre-built images (default)** if you:
+- Want automatic updates via `docker compose pull`
+- Trust the automated build process
+- Don't need custom modifications
+
+**Build locally** if you:
+- Modified the Dockerfile or scripts
+- Need a custom configuration
+- Want to test changes before contributing
+- Have limited internet bandwidth (build once, run many times)
+- Don't have access to GitHub Container Registry
 
 ## Updating
 

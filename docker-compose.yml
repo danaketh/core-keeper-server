@@ -1,9 +1,6 @@
 services:
   core-keeper:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: core-keeper-dedicated:latest
+    image: ghcr.io/danaketh/core-keeper-server:latest
     container_name: core-keeper-dedicated
     restart: unless-stopped
     stop_grace_period: 2m
