@@ -1,0 +1,180 @@
+name: Version Check and Build
+
+on:
+  schedule:
+    # Run every Monday at 09:00 UTC (always runs on default branch)
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    # Allow manual triggering (only from main branch)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  STEAMDB_RSS: https://steamdb.info/api/PatchnotesRSS/?appid=1963720
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history and tags
+
+      - name: Verify main branch
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "Error: This workflow can only run on the main branch"
+            echo "Current ref: ${{ github.ref }}"
+            exit 1
+          fi
+          echo "✓ Running on main branch"
+
+      - name: Fetch latest build number from SteamDB
+        id: get-build
+        run: |
+          echo "Fetching latest build from SteamDB RSS..."
+
+          # Fetch RSS feed and extract latest build number from GUID
+          BUILD_NUMBER=$(curl -s "${{ env.STEAMDB_RSS }}" | \
+            grep -oP '<guid[^>]*>build#\K[0-9]+' | \
+            head -n 1)
+
+          if [ -z "$BUILD_NUMBER" ]; then
+            echo "Error: Could not extract build number from RSS feed"
+            exit 1
+          fi
+
+          echo "Latest build number: $BUILD_NUMBER"
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          BUILD_NUMBER="${{ steps.get-build.outputs.build_number }}"
+
+          # Fetch all tags from remote
+          git fetch --tags
+
+          # Check if tag exists
+          if git rev-parse "build-$BUILD_NUMBER" >/dev/null 2>&1; then
+            echo "Tag build-$BUILD_NUMBER already exists"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Tag build-$BUILD_NUMBER does not exist"
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine if build should proceed
+        id: should-build
+        run: |
+          TAG_EXISTS="${{ steps.check-tag.outputs.tag_exists }}"
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          if [ "$IS_MANUAL" = "true" ]; then
+            echo "Manual trigger detected - proceeding with build"
+            echo "proceed=true" >> $GITHUB_OUTPUT
+          elif [ "$TAG_EXISTS" = "false" ]; then
+            echo "New build detected - proceeding with build"
+            echo "proceed=true" >> $GITHUB_OUTPUT
+          else
+            echo "Build already exists and not manually triggered - skipping"
+            echo "proceed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.should-build.outputs.proceed == 'true'
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: steps.should-build.outputs.proceed == 'true'
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        if: steps.should-build.outputs.proceed == 'true'
+        id: meta
+        uses: docker/metadata-action@96383f45573cb7f253c731d3b3ab81c87ef81934
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=build-${{ steps.get-build.outputs.build_number }}
+            type=raw,value=${{ steps.get-build.outputs.build_number }}
+          labels: |
+            org.opencontainers.image.title=Core Keeper Dedicated Server
+            org.opencontainers.image.description=Core Keeper Dedicated Server
+            org.opencontainers.image.version=${{ steps.get-build.outputs.build_number }}
+
+      - name: Build and push Docker image
+        if: steps.should-build.outputs.proceed == 'true'
+        id: build-and-push
+        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CORE_KEEPER_VERSION=${{ steps.get-build.outputs.build_number }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        if: steps.should-build.outputs.proceed == 'true'
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Sign the published Docker image
+        if: steps.should-build.outputs.proceed == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      - name: Create and push git tag
+        if: steps.should-build.outputs.proceed == 'true' && steps.check-tag.outputs.tag_exists == 'false'
+        run: |
+          BUILD_NUMBER="${{ steps.get-build.outputs.build_number }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "build-$BUILD_NUMBER" -m "Core Keeper build $BUILD_NUMBER"
+          git push origin "build-$BUILD_NUMBER"
+
+      - name: Build summary
+        if: always()
+        run: |
+          BUILD_NUMBER="${{ steps.get-build.outputs.build_number }}"
+          TAG_EXISTS="${{ steps.check-tag.outputs.tag_exists }}"
+          PROCEED="${{ steps.should-build.outputs.proceed }}"
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest Build Number**: $BUILD_NUMBER" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag Exists**: $TAG_EXISTS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Manual Trigger**: $IS_MANUAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Proceeded**: $PROCEED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$PROCEED" = "true" ]; then
+            echo "✅ Image built and pushed with tags:" >> $GITHUB_STEP_SUMMARY
+            echo "- \`latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`build-$BUILD_NUMBER\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`$BUILD_NUMBER\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⏭️ Build skipped - tag already exists" >> $GITHUB_STEP_SUMMARY
+          fi
